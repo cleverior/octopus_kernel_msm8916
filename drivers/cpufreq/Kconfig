@@ -205,6 +205,12 @@ config CPU_FREQ_DEFAULT_GOV_ELEMENTALX
 	help
 	  Use the CPUFreq governor 'elementalx' as default.
 
+config CPU_FREQ_DEFAULT_GOV_DANCEDANCE
+            bool "dancedance"
+            select CPU_FREQ_GOV_DANCEDANCE
+            help
+              Use the CPUFreq governor 'dancedance' as default.
+
 endchoice
 
 config CPU_FREQ_GOV_PERFORMANCE
@@ -376,6 +382,13 @@ config CPU_FREQ_GOV_LIONFISH
 	  module will be called cpufreq_lionfish.
 
 	  If in doubt, say N.
+
+config CPU_FREQ_GOV_DANCEDANCE
+        tristate "'dancedance' cpufreq governor"
+        depends on CPU_FREQ
+        help
+          dancedance' - a "smart" optimized governor!
+          If in doubt, say N.
 
 config CPU_FREQ_GOV_CONSERVATIVE
 	tristate "'conservative' cpufreq governor"
