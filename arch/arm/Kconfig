@@ -1406,6 +1406,7 @@ source "arch/arm/hotplug/intelli_plug/Kconfig"
 source "arch/arm/hotplug/bricked_hotplug/Kconfig"
 source "arch/arm/hotplug/msm_hotplug/Kconfig"
 source "arch/arm/hotplug/alucard_hotplug/Kconfig"
+source "arch/arm/hotplug/MAKO/Kconfig"
 
 menu "Bus support"
 
