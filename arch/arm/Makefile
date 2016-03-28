@@ -266,6 +266,8 @@ core-$(CONFIG_BRICKED_HOTPLUG)	+= arch/arm/hotplug/bricked_hotplug/
 core-$(CONFIG_MSM_HOTPLUG)      += arch/arm/hotplug/msm_hotplug/
 core-$(CONFIG_ALUCARD_HOTPLUG)      += arch/arm/hotplug/alucard_hotplug/
 core-$(CONFIG_MAKO_HOTPLUG)	+= arch/arm/hotplug/MAKO/
+core-$(CONFIG_ZEN_DECISION)	+= arch/arm/hotplug/ZENDECISION/
+core-$(CONFIG_ASMP)	+= arch/arm/hotplug/AUTOSMP/
 
 drivers-$(CONFIG_OPROFILE)      += arch/arm/oprofile/
 
