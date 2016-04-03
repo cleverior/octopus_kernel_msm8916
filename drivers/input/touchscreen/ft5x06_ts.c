@@ -33,6 +33,10 @@
 #include <linux/input/ft5x06_ts.h>
 #include <linux/power_supply.h>
 
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+#include <linux/input/doubletap2wake.h>
+#endif
+
 #if defined(CONFIG_FB)
 #include <linux/notifier.h>
 #include <linux/fb.h>
@@ -1332,7 +1336,13 @@ static int fb_notifier_callback(struct notifier_block *self,
 	int *blank;
 	struct ft5x06_ts_data *ft5x06_data =
 		container_of(self, struct ft5x06_ts_data, fb_notif);
-
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+	bool prevent_sleep = (dt2w_switch > 0);
+			if (prevent_sleep) {
+				ft5x06_ts_resume(&ft5x06_data->client->dev);
+				return 0;
+			} else {
+#endif
 	if (evdata && evdata->data && event == FB_EVENT_BLANK &&
 			ft5x06_data && ft5x06_data->client) {
 		blank = evdata->data;
@@ -1344,7 +1354,9 @@ static int fb_notifier_callback(struct notifier_block *self,
 			ft5x06_ts_suspend(&ft5x06_data->client->dev);
 		}
 	}
-
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+	}
+#endif
 	return 0;
 }
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
