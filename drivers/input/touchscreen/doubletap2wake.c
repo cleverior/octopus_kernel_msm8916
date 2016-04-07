@@ -1,7 +1,7 @@
 /*
  * drivers/input/touchscreen/doubletap2wake.c
  *
- * Copyright (C) 2016 Carlos Arriaga <carlosarriagadv@gmail.com> (osprey,surnia,merlin-port dt2w)
+ *
  * Copyright (c) 2013, Dennis Rassmann <showp1984@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,8 +29,27 @@
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/input.h>
+#ifdef CONFIG_POWERSUSPEND
+#include <linux/powersuspend.h>
+#endif
 #include <linux/hrtimer.h>
 #include <asm-generic/cputime.h>
+
+#ifndef WAKE_HOOKS_DEFINED
+#ifndef CONFIG_HAS_EARLYSUSPEND
+#include <linux/lcd_notify.h>
+#else
+#include <linux/earlysuspend.h>
+#endif
+#endif // WAKE_HOOKS_DEFINED
+
+/* uncomment since no touchscreen defines android touch, do that here */
+//#define ANDROID_TOUCH_DECLARED
+
+/* if Sweep2Wake is compiled it will already have taken care of this */
+#ifdef CONFIG_TOUCHSCREEN_SWEEP2WAKE
+#define ANDROID_TOUCH_DECLARED
+#endif
 
 /* Version, author, desc, etc */
 #define DRIVER_AUTHOR "Dennis Rassmann <showp1984@gmail.com>"
@@ -44,20 +63,26 @@ MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPLv2");
 
 /* Tuneables */
-#define DT2W_DEBUG		0
 #define DT2W_DEFAULT		0
 
 #define DT2W_PWRKEY_DUR		60
-#define DT2W_FEATHER		150
-#define DT2W_TIME           	600
+#define DT2W_TIME		700
 
 /* Resources */
 int dt2w_switch = DT2W_DEFAULT;
 bool dt2w_scr_suspended = false;
+bool dt2w_toggled = false;
+int dt2w_sent_play_pause = 0;
+int dt2w_feather = 200, dt2w_feather_w = 1;
 static cputime64_t tap_time_pre = 0;
 static int touch_x = 0, touch_y = 0, touch_nr = 0, x_pre = 0, y_pre = 0;
 static bool touch_x_called = false, touch_y_called = false, touch_cnt = true;
 static bool exec_count = true;
+#ifndef WAKE_HOOKS_DEFINED
+#ifndef CONFIG_HAS_EARLYSUSPEND
+static struct notifier_block dt2w_lcd_notif;
+#endif
+#endif // WAKE_HOOKS_DEFINED
 static struct input_dev * doubletap2wake_pwrdev;
 static DEFINE_MUTEX(pwrkeyworklock);
 static struct workqueue_struct *dt2w_input_wq;
@@ -69,9 +94,6 @@ static int __init read_dt2w_cmdline(char *dt2w)
 	if (strcmp(dt2w, "1") == 0) {
 		pr_info("[cmdline_dt2w]: DoubleTap2Wake enabled. | dt2w='%s'\n", dt2w);
 		dt2w_switch = 1;
-	} else if (strcmp(dt2w, "2") == 0) {
-		pr_info("[cmdline_dt2w]: DoubleTap2Wake fullscreen enabled. | dt2w='%s'\n", dt2w);
-		dt2w_switch = 2;
 	} else if (strcmp(dt2w, "0") == 0) {
 		pr_info("[cmdline_dt2w]: DoubleTap2Wake disabled. | dt2w='%s'\n", dt2w);
 		dt2w_switch = 0;
@@ -82,6 +104,23 @@ static int __init read_dt2w_cmdline(char *dt2w)
 }
 __setup("dt2w=", read_dt2w_cmdline);
 
+static int __init read_dt2w_feather_cmdline(char *feather)
+{
+	if (strcmp(feather, "1") == 0)
+		dt2w_feather_w = 1;
+	else if (strcmp(feather, "2") == 0)
+		dt2w_feather_w = 2;
+	else if (strcmp(feather, "3") == 0)
+		dt2w_feather_w = 3;
+	else {
+		pr_info("[dt2w_feather]: Input sensitivity not set. Going with default. | feather='%s'\n", feather);
+		dt2w_feather_w = 1;
+	}
+	pr_info("[dt2w_feather]: Input sensitivity set. | feather='%s'\n", feather);
+	return 1;
+}
+__setup("feather=", read_dt2w_feather_cmdline);
+
 /* reset on finger release */
 static void doubletap2wake_reset(void) {
 	exec_count = true;
@@ -89,6 +128,7 @@ static void doubletap2wake_reset(void) {
 	tap_time_pre = 0;
 	x_pre = 0;
 	y_pre = 0;
+	touch_cnt = false;
 }
 
 /* PowerKey work func */
@@ -137,35 +177,37 @@ static void detect_doubletap2wake(int x, int y, bool st)
         pr_info(LOGTAG"x,y(%4d,%4d) single:%s\n",
                 x, y, (single_touch) ? "true" : "false");
 #endif
-	if (x < 100 || x > 980)
-        	return;
-
-	if (dt2w_switch < 2 && y < 1000)
-        	return;
-
+	if (dt2w_feather_w == 2)
+		dt2w_feather = 100;
+	else if (dt2w_feather_w == 3)
+		dt2w_feather = 40;
+	else
+		dt2w_feather = 200;
 	if ((single_touch) && (dt2w_switch > 0) && (exec_count) && (touch_cnt)) {
-		touch_cnt = false;
+		
+		if ((ktime_to_ms(ktime_get())-tap_time_pre) >= DT2W_TIME)
+			doubletap2wake_reset();
+		
 		if (touch_nr == 0) {
 			new_touch(x, y);
 		} else if (touch_nr == 1) {
-			if ((calc_feather(x, x_pre) < DT2W_FEATHER) &&
-			    (calc_feather(y, y_pre) < DT2W_FEATHER) &&
-			    ((ktime_to_ms(ktime_get())-tap_time_pre) < DT2W_TIME))
-				touch_nr++;
-			else {
+			if ((calc_feather(x, x_pre) < dt2w_feather) &&
+			    (calc_feather(y, y_pre) < dt2w_feather)) {
+				pr_info(LOGTAG"ON\n");
+				exec_count = false;
+				doubletap2wake_pwrtrigger();
+				doubletap2wake_reset();
+			} else {
 				doubletap2wake_reset();
 				new_touch(x, y);
 			}
-		} else {
-			doubletap2wake_reset();
-			new_touch(x, y);
 		}
-		if ((touch_nr > 1)) {
+		/*if ((touch_nr > 1)) {
 			pr_info(LOGTAG"ON\n");
 			exec_count = false;
 			doubletap2wake_pwrtrigger();
 			doubletap2wake_reset();
-		}
+		}*/
 	}
 }
 
@@ -208,7 +250,7 @@ static void dt2w_input_event(struct input_handle *handle, unsigned int type,
 		touch_y_called = true;
 	}
 
-	if (touch_x_called || touch_y_called) {
+	if ((touch_x_called || touch_y_called) && touch_cnt) {
 		touch_x_called = false;
 		touch_y_called = false;
 		queue_work_on(0, dt2w_input_wq, &dt2w_input_work);
@@ -216,7 +258,8 @@ static void dt2w_input_event(struct input_handle *handle, unsigned int type,
 }
 
 static int input_dev_filter(struct input_dev *dev) {
-	if (strstr(dev->name, "touch") || strstr(dev->name, "ft5x06_ts")) {
+	if (strstr(dev->name, "touch") ||
+	    strstr(dev->name, "ft5x06")) {
 		return 0;
 	} else {
 		return 1;
@@ -274,6 +317,58 @@ static struct input_handler dt2w_input_handler = {
 	.id_table	= dt2w_ids,
 };
 
+#ifndef WAKE_HOOKS_DEFINED
+#ifndef CONFIG_HAS_EARLYSUSPEND
+static int lcd_notifier_callback(struct notifier_block *this,
+				unsigned long event, void *data)
+{
+	switch (event) {
+	case LCD_EVENT_ON_END:
+		dt2w_scr_suspended = false;
+		dt2w_sent_play_pause = 0;
+		break;
+	case LCD_EVENT_OFF_END:
+		dt2w_scr_suspended = true;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+#else
+static void dt2w_early_suspend(struct early_suspend *h) {
+	dt2w_scr_suspended = true;
+}
+
+static void dt2w_late_resume(struct early_suspend *h) {
+	dt2w_scr_suspended = false;
+}
+
+static struct early_suspend dt2w_early_suspend_handler = {
+	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN,
+	.suspend = dt2w_early_suspend,
+	.resume = dt2w_late_resume,
+};
+#endif
+#endif // WAKE_HOOKS_DEFINED
+
+
+#ifdef CONFIG_POWERSUSPEND
+static void dt2w_power_suspend(struct power_suspend *h) {
+	dt2w_scr_suspended = true;
+}
+
+static void dt2w_power_resume(struct power_suspend *h) {
+	dt2w_scr_suspended = false;
+}
+
+static struct power_suspend dt2w_power_suspend_handler = {
+	.suspend = dt2w_power_suspend,
+	.resume = dt2w_power_resume,
+};
+#endif
+
 /*
  * SYSFS stuff below here
  */
@@ -291,14 +386,47 @@ static ssize_t dt2w_doubletap2wake_dump(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	if (buf[0] >= '0' && buf[0] <= '2' && buf[1] == '\n')
-                if (dt2w_switch != buf[0] - '0')
+                if (dt2w_switch != buf[0] - '0') {
 		        dt2w_switch = buf[0] - '0';
+			/* through 'adb shell' or by other means, if the toggle
+			 * is done several times, 0-to-1, 1-to-0, we need to
+			 * inform the toggle correctly
+			 */
+			dt2w_toggled = (dt2w_toggled == false) ? true : false;
+			pr_info("[dump_dt2w]: DoubleTap2Wake toggled. | "
+					"dt2w='%d' inform toggle='%s'\n", dt2w_switch,
+					(dt2w_toggled) ? "yes" : "no");
+		}
 
 	return count;
 }
 
 static DEVICE_ATTR(doubletap2wake, (S_IWUSR|S_IRUGO),
 	dt2w_doubletap2wake_show, dt2w_doubletap2wake_dump);
+
+static ssize_t dt2w_feather_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	size_t count = 0;
+
+	count += sprintf(buf, "%d\n", dt2w_feather_w);
+
+	return count;
+}
+
+static ssize_t dt2w_feather_dump(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (buf[0] >= '1' && buf[0] <= '3' && buf[1] == '\n') {
+		if (dt2w_feather_w != buf[0] - '0')
+			dt2w_feather_w = buf[0] - '0';
+	} else
+		dt2w_feather_w = '1';
+	return count;
+}
+
+static DEVICE_ATTR(doubletap2wake_feather, (S_IWUSR|S_IRUGO),
+	dt2w_feather_show, dt2w_feather_dump);
 
 static ssize_t dt2w_version_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -322,9 +450,12 @@ static DEVICE_ATTR(doubletap2wake_version, (S_IWUSR|S_IRUGO),
 /*
  * INIT / EXIT stuff below here
  */
+#ifdef ANDROID_TOUCH_DECLARED
+extern struct kobject *android_touch_kobj;
+#else
 struct kobject *android_touch_kobj;
 EXPORT_SYMBOL_GPL(android_touch_kobj);
-
+#endif
 static int __init doubletap2wake_init(void)
 {
 	int rc = 0;
@@ -355,11 +486,27 @@ static int __init doubletap2wake_init(void)
 	if (rc)
 		pr_err("%s: Failed to register dt2w_input_handler\n", __func__);
 
+#ifdef CONFIG_POWERSUSPEND
+	register_power_suspend(&dt2w_power_suspend_handler);
+#endif
+
+#ifndef WAKE_HOOKS_DEFINED
+#ifndef CONFIG_HAS_EARLYSUSPEND
+	dt2w_lcd_notif.notifier_call = lcd_notifier_callback;
+	if (lcd_register_client(&dt2w_lcd_notif) != 0) {
+		pr_err("%s: Failed to register lcd callback\n", __func__);
+	}
+#else
+	register_early_suspend(&dt2w_early_suspend_handler);
+#endif
+#endif // WAKE_HOOKS_DEFINED
+
+#ifndef ANDROID_TOUCH_DECLARED
 	android_touch_kobj = kobject_create_and_add("android_touch", NULL) ;
 	if (android_touch_kobj == NULL) {
 		pr_warn("%s: android_touch_kobj create_and_add failed\n", __func__);
 	}
-
+#endif
 	rc = sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake.attr);
 	if (rc) {
 		pr_warn("%s: sysfs_create_file failed for doubletap2wake\n", __func__);
@@ -367,6 +514,10 @@ static int __init doubletap2wake_init(void)
 	rc = sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake_version.attr);
 	if (rc) {
 		pr_warn("%s: sysfs_create_file failed for doubletap2wake_version\n", __func__);
+	}
+	rc = sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake_feather.attr);
+	if (rc) {
+		pr_warn("%s: sysfs_create_file failed for doubletap2wake_feather\n", __func__);
 	}
 
 err_input_dev:
@@ -379,7 +530,14 @@ err_alloc_dev:
 
 static void __exit doubletap2wake_exit(void)
 {
+#ifndef ANDROID_TOUCH_DECLARED
 	kobject_del(android_touch_kobj);
+#endif
+#ifndef WAKE_HOOKS_DEFINED
+#ifndef CONFIG_HAS_EARLYSUSPEND
+	lcd_unregister_client(&dt2w_lcd_notif);
+#endif
+#endif
 	input_unregister_handler(&dt2w_input_handler);
 	destroy_workqueue(dt2w_input_wq);
 	input_unregister_device(doubletap2wake_pwrdev);
